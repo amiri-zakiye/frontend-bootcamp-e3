@@ -1,91 +1,163 @@
-const endpointUrl = "https://5f87f81549ccbb0016177d0d.mockapi.io/products";
-let abortController = null;
-let lastSearchedValue = null;
-
-const body = document.querySelector("body");
-const input = document.querySelector("input");
-const ul = document.querySelector("ul");
-
-const toggleSearchResults = (visible) => {
-    if(visible){
-        ul.classList.add("show")
-    }else{
-        ul.classList.remove("show")
-    }
-};
-
-const debounce = (callback, delay) => {
+function debounce(callback, delay) {
     let timerId;
     return (...args) => {
         clearTimeout(timerId);
         timerId = setTimeout(() => callback(...args), delay);
     };
-};
+}
 
-const fetchData = async (url) => {
-    if (abortController) {
-        abortController.abort();
+class AbortManager {
+    constructor() {
+        this.abortController = null;
     }
 
-    abortController = new AbortController();
+    getAbortController() {
+        this.abortController = new AbortController();
+        return this.abortController;
+    }
 
-    try {
-        const response = await fetch(url, { signal: abortController.signal });
-        if (!response.ok) {
-            throw new Error(`HTTP error; ${response.status}`);
+    abort() {
+        if (this.abortController) {
+            this.abortController.abort();
         }
-        return await response.json();
-    } catch (error) {
-        if (error.name === "AbortError") {
-            console.log("Fetch request aborted");
+    }
+}
+
+class Fetcher {
+    constructor(url) {
+        this.url = url;
+    }
+
+    async fetchData(abortSignal) {
+        try {
+            const response = await fetch(this.url, { signal: abortSignal });
+            if (!response.ok) {
+                throw new Error(`HTTP error; ${response.status}`);
+            }
+            return await response.json();
+        } catch (error) {
+            if (error.name === "AbortError") {
+                console.log("Fetch request aborted");
+            } else {
+                console.error("Fetch error:", error);
+            }
+            return null;
+        }
+    }
+}
+
+class SearchManager {
+    constructor(fetcher, abortManager) {
+        this.fetcher = fetcher;
+        this.abortManager = abortManager;
+        this.lastSearchedValue = null;
+    }
+
+    async getFilteredProducts(searchTerm) {
+        if (searchTerm === this.lastSearchedValue) return [];
+
+        this.abortManager.abort();
+        const abortController = this.abortManager.getAbortController();
+
+        const data = await this.fetcher.fetchData(abortController.signal);
+        this.lastSearchedValue = searchTerm;
+
+        return data ? this.filterDataBySearchTerm(data, searchTerm) : [];
+    }
+
+    filterDataBySearchTerm(data, searchTerm) {
+        return data.filter(item =>
+            item.name.toLowerCase().includes(searchTerm.toLowerCase())
+        );
+    }
+
+    onSearch = async (searchTerm) => {
+        return this.getFilteredProducts(searchTerm);
+    };
+}
+
+class SearchUI {
+    constructor(searchContainer) {
+        this.searchContainer = searchContainer;
+    }
+
+    setLoadingIndicator() {
+        this.searchContainer.classList.add("loading");
+    }
+
+    removeLoadingIndicator() {
+        this.searchContainer.classList.remove("loading");
+    }
+
+    toggleSearchResults(visible) {
+        if (visible) {
+            this.searchContainer.classList.add("show");
         } else {
-            console.error("Fetch error", error);
+            this.searchContainer.classList.remove("show");
         }
-        return null;
     }
-};
 
-const getFilteredProducts = async (searchTerm) => {
-    if (searchTerm === lastSearchedValue) return;
-    const data = await fetchData(endpointUrl);
-    lastSearchedValue  = searchTerm
-    return data.filter((item) =>
-        item.name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-};
-
-const sortAlphabetically = (array) =>
-    [...array].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
-    );
-
-const displaySearchResults = (data) => {
-    if(data.length > 0){
-        ul.innerHTML = sortAlphabetically(data)
-            .map((item) => `<li id="${item.id}">${item.name}</li>`)
-            .join("");
-    }else{
-        ul.innerHTML = "No results found";
+    displaySearchResults(data) {
+        if (data.length > 0) {
+            this.searchContainer.innerHTML = this.sortAlphabetically(data)
+                .map(item => `<li id="${item.id}">${item.name}</li>`)
+                .join("");
+        } else {
+            this.searchContainer.innerHTML = "No results found";
+        }
+        this.toggleSearchResults(true);
     }
-    toggleSearchResults(true);
-};
 
-const setLoadingIndicator = () => {
-    ul.classList.add("loading")
-}
-const removeLoadingIndicator = () => {
-    ul.classList.remove("loading")
+    sortAlphabetically(array) {
+        return [...array].sort((a, b) =>
+            a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        );
+    }
 }
 
-const onSearch = debounce(async (event) => {
-    const searchTerm = event.target.value.trim();
-    setLoadingIndicator()
-    const data = await getFilteredProducts(searchTerm);
-    removeLoadingIndicator()
-    displaySearchResults(data);
-}, 500);
+const MainController = {
+    state: {
+        container: null,
+        input: null,
+        searchContainer: null,
+        searchManager: null,
+        searchUI: null,
+        fetcher: null,
+        abortManager: null,
+        debounceTime : 500
+    },
 
-input.addEventListener("input", onSearch);
-input.addEventListener("click", (e) => e.stopPropagation());
-ul.addEventListener("click", (e) => e.stopPropagation());
-body.addEventListener("click", () => toggleSearchResults(false));
+    init() {
+
+        this.state.container = document.querySelector(".container");
+        this.state.input = document.querySelector(".input");
+        this.state.searchContainer = document.querySelector(".searchContainer");
+
+        this.state.fetcher = new Fetcher("https://5f87f81549ccbb0016177d0d.mockapi.io/products");
+        this.state.abortManager = new AbortManager();
+        this.state.searchUI = new SearchUI(this.state.searchContainer);
+        this.state.searchManager = new SearchManager(this.state.fetcher, this.state.abortManager);
+
+        this.setupListeners();
+    },
+
+     searchEventHandler : async function(e) {
+         const {searchManager, searchUI } = this.state;
+         const searchTerm = e.target.value.trim();
+        searchUI.setLoadingIndicator();
+        const data = await searchManager.onSearch(searchTerm);
+        searchUI.removeLoadingIndicator();
+        searchUI.displaySearchResults(data);
+    },
+
+    setupListeners() {
+        const { input, container, searchUI,searchContainer, debounceTime } = this.state;
+
+        input.addEventListener("input",  debounce(this.searchEventHandler.bind(this),debounceTime));
+        input.addEventListener("click", (e) => e.stopPropagation());
+        searchContainer.addEventListener("click", (e) => e.stopPropagation());
+        container.addEventListener("click", () => searchUI.toggleSearchResults(false));
+    },
+};
+
+document.addEventListener("DOMContentLoaded", () => MainController.init());
